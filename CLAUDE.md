@@ -1,6 +1,6 @@
 @AGENTS.md
 
-# Trading Habit & Journal App — Agent Instructions
+# Diarylah — Agent Instructions
 
 These instructions govern all work in this repository. Read them fully before your first edit.
 

@@ -1,4 +1,4 @@
-# Trading Habit & Journal App — Technical Plan
+# Diarylah — Technical Plan
 
 > Status: planning. No implementation yet.
 > Last updated: 2026-08-07

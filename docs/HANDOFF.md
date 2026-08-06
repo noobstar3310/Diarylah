@@ -1,4 +1,4 @@
-# Project Handoff
+# Diarylah — Project Handoff
 
 > **Read this at the start of every task. Update it at the end of every task.**
 > This file is the project's memory across sessions, agents, and models. [docs/PLAN.md](PLAN.md) is
@@ -37,7 +37,12 @@ what worked.
   engine, analytics spec, five-phase build order, open questions.
 - [CLAUDE.md](../CLAUDE.md) — agent instructions: product north star, working agreement, security
   rules, git and commit conventions, code conventions.
+- [README.md](../README.md) — public-facing project description, honest about pre-implementation
+  status.
 - This file.
+
+The project is named **Diarylah**. `package.json` carries `"name": "diarylah"`. The working directory
+is still `trading-app/` and the GitHub repo is not yet created — both are the user's to rename.
 
 **What does not exist yet:** everything else. No Supabase project, no Prisma, no schema, no auth, no
 dependencies beyond the scaffold's, no deployment.
@@ -130,11 +135,28 @@ be server cron → web-push → service worker.
 markers and skips CLAUDE.md entirely once AGENTS.md hosts the block. CLAUDE.md imports AGENTS.md via
 `@AGENTS.md` so the Next-version warning still loads.
 
+**2026-08-07 — The project is named Diarylah.** "Diary" plus *lah*, the Malaysian discourse particle.
+Chosen by the user over the alternatives proposed. The warmth of the particle is a real asset rather
+than decoration: this is an app that tells you daily that you broke your own rules, and a stern name
+would make the habit loop feel punitive. It reads as a nudge from a friend. Also distinctive enough
+to be searchable, with no likely trademark collision. Product name is capitalised *Diarylah*; the
+package and repo name are lowercase `diarylah`.
+
 ---
 
 ## Session log
 
 *Append-only, newest first.*
+
+### 2026-08-07 — Named the project Diarylah
+
+Applied the name across `package.json`, [CLAUDE.md](../CLAUDE.md), [PLAN.md](PLAN.md), and this file.
+Replaced the default `create-next-app` [README.md](../README.md) with a real project README covering
+the north star, planned capabilities, stack, and documentation map — written to be honest that
+nothing is implemented yet.
+
+Directory rename and GitHub repo creation are left to the user, who runs all git operations manually.
+No application code written.
 
 ### 2026-08-07 — Agent instructions and handoff established
 
