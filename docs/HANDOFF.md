@@ -142,11 +142,28 @@ would make the habit loop feel punitive. It reads as a nudge from a friend. Also
 to be searchable, with no likely trademark collision. Product name is capitalised *Diarylah*; the
 package and repo name are lowercase `diarylah`.
 
+**2026-08-07 — One commit per task, staged with `git add .`.**
+User preference, replacing the earlier explicit-staging rule. The tradeoff is accepted rather than
+ignored: because staging is unconditional, `.gitignore` becomes the sole barrier between
+`.env.local` and a public repository. Compensating controls recorded in CLAUDE.md §6 — any change
+introducing a secret-bearing file must add its ignore pattern in the same change, and the agent must
+read `git status --short` before suggesting any commit. `!.env.example` was added to `.gitignore` so
+the template is committable while real env files stay excluded.
+
 ---
 
 ## Session log
 
 *Append-only, newest first.*
+
+### 2026-08-07 — Switched to one-shot commits
+
+Adopted the user's preferred git workflow: `git add .` plus a single commit per task. Rewrote
+CLAUDE.md §6 and §7 accordingly, replacing the explicit-staging rule and the split-commit guidance
+with dominant-type subject lines and enumerated bodies.
+
+Added the compensating security controls described in the decision above, and fixed `.gitignore` so
+`.env.example` is committable while `.env*` stays ignored.
 
 ### 2026-08-07 — Named the project Diarylah
 

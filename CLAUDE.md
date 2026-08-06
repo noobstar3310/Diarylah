@@ -168,16 +168,34 @@ the handoff.**
 `gh` command. Read-only inspection (`git status`, `git diff`, `git log`) is fine when it helps you
 understand the working tree.
 
-At the end of every task, output a copy-pasteable block. The user is on **Windows PowerShell**, so
-use multiple `-m` flags rather than here-strings, which break when pasted:
+At the end of every task, output **one** copy-pasteable block: a single `git add .` and a single
+commit covering the whole task. The user stages everything at once and prefers one commit per task
+over split commits. Do not suggest breaking a task into several commits unless asked.
+
+The user is on **Windows PowerShell**, so use `-m` flags rather than here-strings, which break when
+pasted:
 
 ```powershell
-git add docs/PLAN.md docs/HANDOFF.md
-git commit -m "docs: add technical plan and handoff" -m "Bodies go in a second -m flag."
+git add .
+git commit -m "feat(trade): add trade entry form" -m "- clipboard paste and file upload
+- live P/L preview against instrument contract specs
+- updates handoff"
 ```
 
-Stage files **explicitly**. Do not suggest `git add .` — it sweeps up `.env` files, build output, and
-unrelated work. Never suggest `--no-verify`, `--force`, or history rewriting.
+### `.gitignore` is a security control
+
+Because staging is unconditional, `.gitignore` is the only thing standing between `.env.local` — which
+holds the database URL, Supabase service role key, and VAPID private key — and a public repository.
+Treat it as security infrastructure, not housekeeping:
+
+- Any change introducing a file that holds secrets, credentials, tokens, or local-only state **must**
+  add its pattern to `.gitignore` in that same change, before the commit is suggested.
+- **Run `git status --short` and actually read it before suggesting the commit.** If anything
+  unexpected is staged — a secret, a build artefact, a stray scratch file, an unrelated edit — say so
+  plainly and fix the ignore rules first. This check is not optional; it is the compensating control
+  for `git add .`.
+
+Never suggest `--no-verify`, `--force`, or history rewriting.
 
 Note: `next dev` rewrites the managed block in AGENTS.md. If it appears in the diff, include it in the
 commit rather than reverting it — reverting only re-creates the change.
@@ -238,8 +256,20 @@ feat(db)!: split planned TP/SL from actual exit price
 docs: record FX snapshot decision in handoff
 ```
 
-Keep commits focused. If a change spans unrelated concerns, suggest separate commits rather than one
-mixed commit.
+Since a commit covers a whole task (see §6), it will often span several concerns. In that case pick
+the **dominant** type and scope for the subject line, and enumerate the rest as bullets in the body:
+
+```
+feat(trade): add trade entry form
+
+- clipboard paste, drag-drop, and file upload to private storage
+- live P/L preview against instrument contract specs
+- adds MAX_UPLOAD_BYTES to .env.example
+- updates handoff
+```
+
+The subject describes the headline change; the body carries everything else. Do not stretch the
+subject to cover unrelated work.
 
 ---
 
