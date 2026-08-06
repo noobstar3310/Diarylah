@@ -54,14 +54,21 @@ dependencies beyond the scaffold's, no deployment.
 
 ## Environment
 
-Nothing configured yet. Phase 0 will need:
+**Done:**
 
-- A Supabase project (Postgres + Auth + Storage).
-- `.env.local` with `DATABASE_URL` (transaction pooler, port 6543, `?pgbouncer=true`) and
-  `DIRECT_URL` (direct connection, port 5432, used by Prisma Migrate only).
-- Supabase URL and `anon` key for the browser client; service role key server-only.
-- A Google OAuth client for social login.
-- An `.env.example` committed with variable names and no values.
+- Supabase project **Diarylah** exists — free tier, Asia-Pacific. Data API off, automatic RLS on.
+- [.env.example](../.env.example) committed, documenting every variable with inline setup notes.
+
+**Still needed before the first migration:**
+
+- `.env.local` populated from `.env.example`. Note the port split: `DATABASE_URL` uses the
+  transaction pooler on **6543** for runtime queries, `DIRECT_URL` uses **5432** for Prisma Migrate,
+  which cannot run DDL through a pooler. Percent-encode the password.
+- A Google OAuth client, with redirect URI `https://<project-ref>.supabase.co/auth/v1/callback`,
+  registered in Supabase → Authentication → Providers.
+- A Vercel project, for the Phase 0 deployment check.
+
+**Not yet needed:** VAPID keys (Phase 4). Frankfurter needs no API key.
 
 ---
 
@@ -150,11 +157,37 @@ introducing a secret-bearing file must add its ignore pattern in the same change
 read `git status --short` before suggesting any commit. `!.env.example` was added to `.gitignore` so
 the template is committable while real env files stay excluded.
 
+**2026-08-07 — Supabase Data API (PostgREST) disabled at project creation.**
+Available to us precisely because Prisma queries over a direct Postgres connection. Deletes the
+public REST attack surface rather than guarding it with RLS. Auth (`/auth/v1`) and Storage
+(`/storage/v1`) are separate services and unaffected — `supabase-js` remains in use for those two
+things only. **RLS is still required** as defense in depth, since the Data API could be re-enabled
+later. "Automatically expose new tables" also unchecked so a future re-enable would not immediately
+publish everything. Automatic-RLS event trigger left ON: Prisma Migrate creates tables with RLS off,
+and this trigger closes that gap without relying on anyone remembering.
+
+Tradeoff accepted: the Supabase Studio Table Editor may be degraded, since parts of Studio read
+through PostgREST. `npx prisma studio` is the substitute and matches our schema exactly.
+
 ---
 
 ## Session log
 
 *Append-only, newest first.*
+
+### 2026-08-07 — Supabase project created
+
+Project **Diarylah** created on the free tier, Asia-Pacific region. Security settings as recorded in
+the decision above: Data API off, auto-expose off, automatic RLS on.
+
+Added [.env.example](../.env.example) documenting every variable Phase 0 needs, with inline notes on
+the pooler-versus-direct port split and the password percent-encoding trap.
+
+**Outstanding:** the Supabase GitHub integration is still connected. It has write access to the repo
+and can auto-apply migrations on push, which collides with Prisma Migrate as the single schema owner.
+User has the disconnect steps (Supabase Settings → Integrations, and
+github.com/settings/installations). Low risk in the meantime — the integration looks for
+`supabase/migrations/` and Prisma writes to `prisma/migrations/`, so it has nothing to deploy.
 
 ### 2026-08-07 — Switched to one-shot commits
 

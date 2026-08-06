@@ -182,6 +182,11 @@ git commit -m "feat(trade): add trade entry form" -m "- clipboard paste and file
 - updates handoff"
 ```
 
+**Only ever put runnable commands inside a ```powershell block.** Command *output* — `git status`
+results, error text, logs — goes in a plain block with a label, or in a table. A bare code block
+next to a real command reads as copy-pasteable, and pasting `git status` output into a shell
+produces a wall of "term not recognized" errors.
+
 ### `.gitignore` is a security control
 
 Because staging is unconditional, `.gitignore` is the only thing standing between `.env.local` — which
