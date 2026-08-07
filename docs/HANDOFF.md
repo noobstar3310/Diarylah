@@ -303,6 +303,39 @@ same as guarding "who can this become".
 
 *Append-only, newest first.*
 
+### 2026-08-07 — Instrument catalogue seeded
+
+Added [prisma/instruments.ts](../prisma/instruments.ts) (the data) and
+[prisma/seed.ts](../prisma/seed.ts) (the runner), plus `tsx` to execute TypeScript scripts without a
+build step. `npm run db:seed`.
+
+**55 instruments seeded and verified in the live database:** 35 FX (majors, crosses, exotics), 2
+metals, 10 indices, 8 crypto. Run twice to confirm idempotency — second run reported
+`created 0, updated 55`.
+
+The seed uses `prismaSystem`, which is one of its four sanctioned uses: the catalogue is shared
+reference data with no owner, and `prismaForUser` refuses to write it. The `update` branch
+deliberately does not touch `isActive`, so re-seeding cannot resurrect an instrument an operator
+retired by hand.
+
+Contract specs carry the common retail defaults, with gold at **100 oz/lot** and silver at
+**5,000 oz/lot** rather than the 100,000 used for FX — the most common source of wrong P/L in retail
+journals. Index and crypto specs vary by broker, which is what `InstrumentOverride` and the
+per-trade `pnlOverride` exist for.
+
+Two bugs worth recording, both caught before commit:
+
+- **ESM import hoisting.** `seed.ts` called `process.loadEnvFile()` in the module body, but static
+  imports are evaluated first, so `lib/db.ts` ran and threw on the missing `DATABASE_URL` before the
+  env file was ever read. Fixed by importing `lib/db` dynamically inside `main()`. Any module that
+  reads env at import time has this hazard.
+- **Seed data typed as `string` rather than the generated enums.** Compiled locally but failed
+  typecheck against Prisma's input types. Now typed against `Currency`, `InstrumentKind` and
+  `SizingMode` from the generated client, so a mistyped currency fails to compile rather than at
+  insert.
+
+Full sequence verified green: lint, typecheck, 36 tests, prisma validate, build.
+
 ### 2026-08-07 — Tenancy guardrail proven by tests
 
 Added **Vitest** and [lib/tenancy.test.ts](../lib/tenancy.test.ts) — **36 tests**, all passing. The
@@ -500,7 +533,7 @@ architecture, and the PWA push constraints. Settled the decisions recorded above
    [lib/tenancy.test.ts](../lib/tenancy.test.ts). One remaining gap: these prove the *rewriting* is
    correct, not that Postgres then behaves as expected. An integration test against a real database
    is worth adding once a separate dev Supabase project exists.
-8. Seed the instrument catalogue (FX majors, metals, indices, crypto) via `prismaSystem`.
+8. ~~Seed the instrument catalogue.~~ **Done** — 55 instruments live, `npm run db:seed`, idempotent.
 9. Wire Supabase Auth: email + Google, and settle identity-linking behaviour. Create the `User` row
    on first sign-in.
 10. Deploy to Vercel and confirm the pooled connection works in a serverless runtime.
