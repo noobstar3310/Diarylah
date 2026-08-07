@@ -190,11 +190,82 @@ transaction pooler cannot. `DATABASE_URL` (6543) is for runtime queries through 
 Also note the default generator provider in Prisma 7 is `prisma-client`, not `prisma-client-js`, and
 it requires an explicit `output` path.
 
+**2026-08-07 — Schema design decisions.** Beyond what PLAN.md §4 specifies:
+
+- **Two currency enums, not one.** `AccountCurrency` (USD/GBP/EUR/MYR) for journal bases and the
+  user's display currency; `Currency` (18 values) for instrument quote currencies. This puts the
+  constraint in the type system — TypeScript refuses a JPY-denominated journal — rather than leaving
+  it to a runtime check. It also keeps the FX table minimal: rates run *from* `Currency` *into*
+  `AccountCurrency`, never between arbitrary pairs.
+- **`Trade.userId` is denormalised** from `journal.userId`. Every tenant-scoped query would otherwise
+  need a join, and the `prismaForUser` extension filters on a direct column.
+- **`Rule` → `TradeRuleCheck` is `onDelete: Restrict`, not Cascade.** Deleting a rule must not erase
+  the record of having broken it. Rules retire via `isActive`. This is the honest-history principle
+  enforced at the schema level rather than trusted to the UI.
+- **`Instrument` → `Trade` is `Restrict`** for the same reason; **`User` → everything is `Cascade`**
+  so account deletion genuinely removes the data.
+- **`uuid(7)` primary keys**, not `uuid(4)`. UUIDv7 is time-sortable, which keeps index locality
+  reasonable as the trade table grows. `User.id` has no default — it is supplied by Supabase Auth.
+- **Decimal precisions:** prices `(24,10)` to cover crypto and JPY pairs alike; money `(18,4)`; sizes
+  and contract sizes `(18,8)` for fractional crypto units; FX rates `(20,10)`.
+- **Table names are snake_case via `@@map`**, so raw SQL in migrations and RLS policies reads
+  naturally against Postgres conventions.
+- **`ReminderSchedule.localTime` is `VarChar(5)` holding "HH:MM"**, not a timestamp — a wall-clock
+  reminder must survive DST changes, which an instant would not.
+
+**2026-08-07 — Hosting and branching guidance (user action pending).**
+Vercel confirmed as the right host. Two things flagged: Vercel functions default to `iad1`
+(Washington DC) while the database is in Singapore, so the project's function region must be set to
+`sin1` or every query crosses the Pacific; and the Hobby tier is non-commercial, so paying users
+require Pro.
+
+Branching: `main` protected, feature branches via PR, CI as a required status check, Vercel preview
+per PR, admin bypass left enabled since the user works solo. **Migrations stay manual** —
+`prisma generate` runs at build, `prisma migrate deploy` does not. This is the same reasoning that
+led to disconnecting Supabase's GitHub integration: schema changes against real trades need a human.
+
+A second Supabase project for dev/previews is not needed yet — Phase 0 CI is lint, typecheck, and
+pure unit tests. Add it before Phase 1 ends, while there is still no real data to protect.
+
 ---
 
 ## Session log
 
 *Append-only, newest first.*
+
+### 2026-08-07 — CI workflow and Vercel region
+
+Added [.github/workflows/ci.yml](../.github/workflows/ci.yml) running on PRs to `main` and pushes to
+`main`: install, lint, typecheck, `prisma validate`, build. Job name is **`verify`** — that is the
+string to select as a required status check in branch protection. All four steps verified passing
+locally before commit.
+
+The workflow sets placeholder `DATABASE_URL` / `DIRECT_URL` values. These are not credentials and CI
+has no database access; they exist because `prisma.config.ts` resolves `DIRECT_URL` at load time and
+would throw on a missing variable, which would break `npm ci`'s postinstall.
+
+Added [vercel.json](../vercel.json) pinning `regions: ["sin1"]`. Chosen over the dashboard setting so
+the region is version-controlled and cannot drift — the database is in Singapore, and Vercel's
+default `iad1` would route every query through Virginia.
+
+**Sequencing note for whoever sets up branch protection:** GitHub cannot offer `verify` as a required
+check until the workflow has run at least once. Push it to `main` first, then add the rule.
+
+### 2026-08-07 — Database schema authored
+
+Wrote the full [prisma/schema.prisma](../prisma/schema.prisma): 12 models and 9 enums covering
+identity, journals, the instrument catalogue with per-journal overrides, trades with the plan/outcome
+split, chart images, the rule and rule-check habit layer, daily reviews, the FX rate cache, and the
+Phase 4 push tables. Every money, price, size and rate field is `Decimal`.
+
+`prisma validate` passes, `prisma format` applied, `prisma generate` produces a client in
+`lib/generated/prisma` (gitignored), and `tsc --noEmit` is clean.
+
+Added npm scripts: `typecheck`, `db:generate`, `db:migrate`, `db:deploy`, `db:studio`, and a
+`postinstall` running `prisma generate` so Vercel builds have a client.
+
+**No migration has been run.** The database is still empty by design — the schema is for review
+first.
 
 ### 2026-08-07 — Prisma installed, live database connection verified
 
@@ -279,13 +350,11 @@ architecture, and the PWA push constraints. Settled the decisions recorded above
 
 1. ~~Create the Supabase project; capture credentials.~~ **Done.**
 2. ~~Install and configure Prisma; confirm the connection.~~ **Done.**
-3. **Author the schema** from [PLAN.md §4](PLAN.md). `Decimal` on every money and price field. Show
-   it for review before running any migration.
-4. Add the `prisma-client` generator with an explicit output path, gitignore the generated client,
-   and add a `postinstall` generate step for Vercel builds.
+3. ~~Author the schema from [PLAN.md §4](PLAN.md).~~ **Done, awaiting review before migrating.**
+4. ~~Generator, gitignore, `postinstall`.~~ **Done.**
 5. Wire the runtime `PrismaClient` with a driver adapter (`@prisma/adapter-pg`) against the pooled
-   `DATABASE_URL`.
-6. Write RLS policies as raw SQL in the initial migration.
+   `DATABASE_URL`. Prisma 7 no longer accepts a connection URL on the constructor.
+6. Run the first migration, and write RLS policies as raw SQL inside it.
 7. Build the `prismaForUser` client extension and prove the tenancy guardrail with a test.
 8. Wire Supabase Auth: email + Google, and settle identity-linking behaviour.
 9. Seed the instrument catalogue.

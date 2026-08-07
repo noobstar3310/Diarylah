@@ -3,7 +3,472 @@
 //
 // Prisma 7 note: connection URLs live in prisma.config.ts, not here. The
 // runtime client gets its connection through a driver adapter.
+//
+// Money rule: every price, size, rate and amount is Decimal, never Float.
+// Float error accumulates across summed trades and would silently corrupt the
+// equity curve — in an app whose value rests on the user trusting its numbers.
 
 datasource db {
   provider = "postgresql"
+}
+
+generator client {
+  provider = "prisma-client"
+  output   = "../lib/generated/prisma"
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+/// Currencies a journal can be denominated in. Deliberately narrower than
+/// `Currency`: these are the only bases we hold FX rates for.
+enum AccountCurrency {
+  USD
+  GBP
+  EUR
+  MYR
+}
+
+/// Every currency that can appear as an instrument's quote currency. Rates are
+/// stored from these into AccountCurrency.
+enum Currency {
+  USD
+  GBP
+  EUR
+  MYR
+  JPY
+  CHF
+  CAD
+  AUD
+  NZD
+  SGD
+  HKD
+  CNH
+  SEK
+  NOK
+  ZAR
+  MXN
+  PLN
+  USDT
+}
+
+enum InstrumentKind {
+  FX
+  METAL
+  INDEX
+  CRYPTO
+}
+
+/// Drives the trade form's size label and validation: "Lot size" for anything
+/// contract-based, "Quantity" for crypto sized in coin units.
+enum SizingMode {
+  LOTS
+  UNITS
+}
+
+enum Direction {
+  LONG
+  SHORT
+}
+
+/// Derived from realised P/L, never entered by the user — a manual selector
+/// could contradict the arithmetic.
+enum TradeOutcome {
+  WIN
+  LOSS
+  BREAKEVEN
+}
+
+enum TradeImageKind {
+  BEFORE
+  AFTER
+}
+
+enum Mood {
+  CALM
+  FOCUSED
+  ANXIOUS
+  FRUSTRATED
+  EUPHORIC
+  TIRED
+}
+
+enum ReminderKind {
+  PRE_SESSION
+  END_OF_DAY
+  UNJOURNALLED_TRADES
+  WEEKLY_REVIEW
+}
+
+// ---------------------------------------------------------------------------
+// Identity
+// ---------------------------------------------------------------------------
+
+/// Mirrors auth.users. `id` is supplied by Supabase Auth, never generated here.
+model User {
+  id String @id @db.Uuid
+
+  email       String  @unique
+  displayName String?
+
+  /// IANA zone, e.g. "Asia/Kuala_Lumpur". Every notion of "day" — streaks,
+  /// daily P&L, today's checklist — derives from this, never from server UTC.
+  /// See docs/PLAN.md §6.
+  timezone String @default("UTC")
+
+  /// Used only for the cross-journal totals view. Individual journals always
+  /// display in their own base currency.
+  displayCurrency AccountCurrency @default(USD)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  journals          Journal[]
+  trades            Trade[]
+  rules             Rule[]
+  dailyReviews      DailyReview[]
+  pushSubscriptions PushSubscription[]
+  reminders         ReminderSchedule[]
+
+  @@map("users")
+}
+
+// ---------------------------------------------------------------------------
+// Journals (simulated trading accounts)
+// ---------------------------------------------------------------------------
+
+model Journal {
+  id     String @id @default(uuid(7)) @db.Uuid
+  userId String @db.Uuid
+
+  name   String
+  broker String?
+
+  baseCurrency    AccountCurrency
+  startingBalance Decimal         @default(0) @db.Decimal(18, 4)
+
+  /// Journals are archived rather than deleted. Destroying a trading record to
+  /// tidy up defeats the point of keeping one.
+  isArchived Boolean @default(false)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  user                User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  trades              Trade[]
+  instrumentOverrides InstrumentOverride[]
+
+  @@index([userId, isArchived])
+  @@map("journals")
+}
+
+// ---------------------------------------------------------------------------
+// Instruments
+// ---------------------------------------------------------------------------
+
+/// Global seeded catalogue, shared by all users. Contract specs vary between
+/// brokers, so this holds the common case and InstrumentOverride handles the
+/// rest. See docs/PLAN.md §5.2.
+model Instrument {
+  id String @id @default(uuid(7)) @db.Uuid
+
+  symbol      String         @unique
+  displayName String
+  kind        InstrumentKind
+
+  /// The multiplier in `pnlQuote = (exit - entry) x direction x contractSize x size`.
+  /// EURUSD 100000, XAUUSD 100, NAS100 1, BTCUSD 1.
+  contractSize Decimal @db.Decimal(18, 8)
+
+  /// Price increment of one pip, for display only. Null where pips are not a
+  /// meaningful unit (indices, crypto).
+  pipSize Decimal? @db.Decimal(18, 10)
+
+  /// P/L lands in this currency before conversion to the journal's base.
+  quoteCurrency Currency
+
+  sizingMode SizingMode
+  isActive   Boolean    @default(true)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  trades    Trade[]
+  overrides InstrumentOverride[]
+
+  @@index([kind, isActive])
+  @@map("instruments")
+}
+
+/// Per-journal correction when a broker's contract size differs from the
+/// catalogue. Only created when it actually differs.
+model InstrumentOverride {
+  id           String @id @default(uuid(7)) @db.Uuid
+  journalId    String @db.Uuid
+  instrumentId String @db.Uuid
+
+  contractSize Decimal @db.Decimal(18, 8)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  journal    Journal    @relation(fields: [journalId], references: [id], onDelete: Cascade)
+  instrument Instrument @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
+
+  @@unique([journalId, instrumentId])
+  @@map("instrument_overrides")
+}
+
+// ---------------------------------------------------------------------------
+// Trades
+// ---------------------------------------------------------------------------
+
+model Trade {
+  id           String @id @default(uuid(7)) @db.Uuid
+  /// Denormalised from journal.userId so every query can be tenant-scoped
+  /// without a join. The prismaForUser extension filters on this.
+  userId       String @db.Uuid
+  journalId    String @db.Uuid
+  instrumentId String @db.Uuid
+
+  direction Direction
+
+  /// Lots for contract-based instruments, coin units for crypto — see
+  /// Instrument.sizingMode.
+  size Decimal @db.Decimal(18, 8)
+
+  // --- The plan -----------------------------------------------------------
+  entryAt    DateTime @db.Timestamptz(6)
+  entryPrice Decimal  @db.Decimal(24, 10)
+
+  /// Required in practice: R-multiple is undefined without it, and recording a
+  /// stop at entry is the discipline the app exists to build. Nullable only so
+  /// a trade taken without one can be logged and flagged rather than hidden.
+  stopLoss   Decimal? @db.Decimal(24, 10)
+  takeProfit Decimal? @db.Decimal(24, 10)
+
+  // --- What actually happened ---------------------------------------------
+  // Kept separate from the plan above. Most trades do not cleanly hit either
+  // target, and the gap between intent and outcome is one of the strongest
+  // habit signals available. Null while the position is still open.
+  exitAt    DateTime? @db.Timestamptz(6)
+  exitPrice Decimal?  @db.Decimal(24, 10)
+
+  // --- Costs, charged by the broker in the journal's base currency ---------
+  commission Decimal @default(0) @db.Decimal(18, 4)
+  swap       Decimal @default(0) @db.Decimal(18, 4)
+
+  // --- Computed on write, never recomputed on read ------------------------
+  // Snapshotting keeps history immutable. Converting live would mean a trade
+  // closed months ago changes value on every page load. See docs/PLAN.md §5.3.
+
+  /// Gross P/L in the instrument's quote currency.
+  pnlQuote Decimal? @db.Decimal(20, 6)
+
+  /// quote -> journal base, as at the exit date.
+  fxRate Decimal? @db.Decimal(20, 10)
+
+  /// Authoritative net P/L in the journal's base currency, after costs. Written
+  /// from pnlOverride when that is set.
+  pnl Decimal? @db.Decimal(18, 4)
+
+  /// User-supplied correction, pasted from a broker statement when computed P/L
+  /// disagrees. Presence of a value here means `pnl` came from the user.
+  pnlOverride Decimal? @db.Decimal(18, 4)
+
+  /// pnlQuote / riskQuote. Currency-agnostic — both terms are in the quote
+  /// currency, so they cancel. The primary dashboard metric.
+  rMultiple Decimal? @db.Decimal(12, 4)
+
+  /// Display only. Null where pips are not meaningful for the instrument.
+  pips Decimal? @db.Decimal(14, 2)
+
+  /// Derived from pnl. Null while the position is open.
+  outcome TradeOutcome?
+
+  notes String?
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  user       User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  journal    Journal          @relation(fields: [journalId], references: [id], onDelete: Cascade)
+  instrument Instrument       @relation(fields: [instrumentId], references: [id], onDelete: Restrict)
+  images     TradeImage[]
+  ruleChecks TradeRuleCheck[]
+
+  @@index([userId, entryAt(sort: Desc)])
+  @@index([journalId, exitAt(sort: Desc)])
+  @@index([journalId, instrumentId])
+  @@index([userId, outcome])
+  @@map("trades")
+}
+
+/// Chart screenshots. Files live in a private Supabase Storage bucket keyed
+/// {userId}/{tradeId}/… and are served through short-lived signed URLs; this
+/// row holds only the object path. See docs/PLAN.md §3.3.
+model TradeImage {
+  id      String @id @default(uuid(7)) @db.Uuid
+  tradeId String @db.Uuid
+
+  storagePath String         @unique
+  kind        TradeImageKind @default(BEFORE)
+  caption     String?
+  sortOrder   Int            @default(0)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  trade Trade @relation(fields: [tradeId], references: [id], onDelete: Cascade)
+
+  @@index([tradeId, sortOrder])
+  @@map("trade_images")
+}
+
+// ---------------------------------------------------------------------------
+// The habit layer
+// ---------------------------------------------------------------------------
+
+/// The user's own definition of a good trade.
+model Rule {
+  id     String @id @default(uuid(7)) @db.Uuid
+  userId String @db.Uuid
+
+  label       String
+  description String?
+
+  /// Rules are retired, never deleted — see the Restrict on TradeRuleCheck.
+  isActive  Boolean @default(true)
+  sortOrder Int     @default(0)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  user   User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  checks TradeRuleCheck[]
+
+  @@index([userId, isActive, sortOrder])
+  @@map("rules")
+}
+
+/// The join that makes this one product rather than two. Every logged trade
+/// records which rules were followed, so discipline is measured from evidence
+/// rather than self-reported.
+model TradeRuleCheck {
+  id      String @id @default(uuid(7)) @db.Uuid
+  tradeId String @db.Uuid
+  ruleId  String @db.Uuid
+
+  followed Boolean
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  trade Trade @relation(fields: [tradeId], references: [id], onDelete: Cascade)
+  /// Restrict, not Cascade: deleting a rule must not erase the record of having
+  /// broken it. Retire the rule with isActive instead.
+  rule  Rule  @relation(fields: [ruleId], references: [id], onDelete: Restrict)
+
+  @@unique([tradeId, ruleId])
+  @@index([ruleId, followed])
+  @@map("trade_rule_checks")
+}
+
+model DailyReview {
+  id     String @id @default(uuid(7)) @db.Uuid
+  userId String @db.Uuid
+
+  /// A plain date in the user's timezone, not derived from UTC at read time.
+  localDate DateTime @db.Date
+
+  mood  Mood?
+  notes String?
+
+  /// Denormalised snapshot computed from that day's TradeRuleCheck rows.
+  /// Stored so the historical figure survives later changes to the rule set.
+  disciplineScore Int?
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, localDate])
+  @@index([userId, localDate(sort: Desc)])
+  @@map("daily_reviews")
+}
+
+// ---------------------------------------------------------------------------
+// FX rates
+// ---------------------------------------------------------------------------
+
+/// Daily close rates, cached from Frankfurter (ECB). `rate` is how many units
+/// of `base` one unit of `quote` buys. ECB publishes on weekdays only, so
+/// weekend and holiday fills carry forward the last available date.
+model FxRate {
+  id String @id @default(uuid(7)) @db.Uuid
+
+  base  AccountCurrency
+  quote Currency
+  date  DateTime        @db.Date
+
+  rate Decimal @db.Decimal(20, 10)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  @@unique([base, quote, date])
+  @@index([base, quote, date(sort: Desc)])
+  @@map("fx_rates")
+}
+
+// ---------------------------------------------------------------------------
+// Reminders (Phase 4)
+// ---------------------------------------------------------------------------
+
+/// One row per installed device. The web has no local notification scheduling,
+/// so reminders are server cron -> web-push -> service worker. See PLAN.md §7.
+model PushSubscription {
+  id     String @id @default(uuid(7)) @db.Uuid
+  userId String @db.Uuid
+
+  endpoint String @unique
+  p256dh   String
+  auth     String
+
+  userAgent String?
+
+  /// Refreshed on each app open. Subscriptions die silently when a user
+  /// reinstalls; stale rows are pruned when web-push returns 404/410.
+  lastSeenAt DateTime @default(now()) @db.Timestamptz(6)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("push_subscriptions")
+}
+
+model ReminderSchedule {
+  id     String @id @default(uuid(7)) @db.Uuid
+  userId String @db.Uuid
+
+  kind ReminderKind
+
+  /// Local wall-clock "HH:MM" in the user's timezone. Stored as text rather
+  /// than an instant precisely because it must survive DST changes.
+  localTime String @db.VarChar(5)
+
+  /// ISO weekdays, 1 = Monday .. 7 = Sunday.
+  daysOfWeek Int[]
+
+  isActive Boolean @default(true)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, kind])
+  @@index([isActive, localTime])
+  @@map("reminder_schedules")
 }
