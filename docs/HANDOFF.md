@@ -27,12 +27,15 @@ what worked.
 
 ## Current state
 
-**Phase:** Pre-Phase 0 — planning complete, implementation not started.
+**Phase:** Phase 0 — Foundation, in progress. Database connection proven; no models yet.
 
 **What exists:**
 
-- An unmodified `create-next-app` scaffold: Next.js 16.3.0, React 19.2.8, TypeScript, Tailwind v4,
-  App Router at [app/](../app/). Default landing page, untouched.
+- A `create-next-app` scaffold: Next.js 16.3.0, React 19.2.8, TypeScript, Tailwind v4, App Router at
+  [app/](../app/). Default landing page, untouched.
+- **Prisma 7.9.1** installed (`prisma`, `@prisma/client`), configured via
+  [prisma.config.ts](../prisma.config.ts), with [prisma/schema.prisma](../prisma/schema.prisma)
+  holding the datasource provider only. `npx prisma migrate status` connects successfully.
 - [docs/PLAN.md](PLAN.md) — full technical plan: stack, security architecture, data model, P/L and FX
   engine, analytics spec, five-phase build order, open questions.
 - [CLAUDE.md](../CLAUDE.md) — agent instructions: product north star, working agreement, security
@@ -169,11 +172,51 @@ and this trigger closes that gap without relying on anyone remembering.
 Tradeoff accepted: the Supabase Studio Table Editor may be degraded, since parts of Studio read
 through PostgREST. `npx prisma studio` is the substitute and matches our schema exactly.
 
+**2026-08-07 — Prisma 7 conventions differ sharply from Prisma 5/6. Verified empirically, not
+assumed.** Installed version is **7.9.1**. Three breaking differences that will mislead any agent
+working from older knowledge:
+
+1. **`url` and `directUrl` are rejected in `schema.prisma`.** Error P1012. Connection URLs now live
+   in `prisma.config.ts` under `datasource`. The schema's `datasource` block carries only `provider`.
+2. **Prisma does not auto-load `.env`, and never loaded `.env.local`.** `prisma.config.ts` bridges it
+   with `process.loadEnvFile('.env.local')` (native in Node 20.12+; we are on Node 24), wrapped in
+   try/catch so Vercel and CI — which inject env vars directly — don't fail on a missing file.
+3. **The runtime client requires a driver adapter.** `PrismaClient` no longer takes a connection URL;
+   it needs an `adapter` (e.g. `@prisma/adapter-pg`) or `accelerateUrl`. Still to be wired up.
+
+The config datasource uses **`DIRECT_URL`** (session pooler, 5432) because Migrate runs DDL, which a
+transaction pooler cannot. `DATABASE_URL` (6543) is for runtime queries through the adapter.
+
+Also note the default generator provider in Prisma 7 is `prisma-client`, not `prisma-client-js`, and
+it requires an explicit `output` path.
+
 ---
 
 ## Session log
 
 *Append-only, newest first.*
+
+### 2026-08-07 — Prisma installed, live database connection verified
+
+Verified `.env.local` with a throwaway script that parses and reports only shapes, hosts, and key
+prefixes — never a password. Caught two problems: the URLs initially held the template placeholders
+rather than real values, and once filled, the generated database password contained a `?`, which
+begins a URL query string and left the connection string with no hostname. It also contained a double
+quote, which is hazardous inside a double-quoted dotenv value. Resolved by resetting the password to
+32 alphanumeric characters rather than percent-encoding — the encoding fix would have addressed only
+the `?`.
+
+Installed `prisma` and `@prisma/client` 7.9.1. Added [prisma.config.ts](../prisma.config.ts) and a
+minimal [prisma/schema.prisma](../prisma/schema.prisma) with the datasource provider only.
+
+`npx prisma migrate status` now connects successfully to
+`aws-0-ap-southeast-1.pooler.supabase.com:5432` and reports no migrations, which is the correct state
+for a fresh project. **The database connection is proven end to end.**
+
+Installed `dotenv-cli` then removed it — `process.loadEnvFile` made it unnecessary, and CLAUDE.md
+§5.6 treats every dependency as attack surface.
+
+No models defined yet.
 
 ### 2026-08-07 — Supabase project created
 
@@ -232,18 +275,21 @@ architecture, and the PWA push constraints. Settled the decisions recorded above
 
 ## Next up
 
-**Phase 0 — Foundation.** In rough order:
+**Phase 0 — Foundation.** Remaining, in order:
 
-1. Create the Supabase project; capture connection strings and keys into `.env.local` and
-   `.env.example`.
-2. Install and configure Prisma against the Supabase pooler; confirm `DATABASE_URL` /`DIRECT_URL`
-   split works for both runtime queries and migrations.
-3. Author the schema from [PLAN.md §4](PLAN.md).
-4. Write RLS policies as raw SQL in the initial migration.
-5. Build the `prismaForUser` client extension and prove the tenancy guardrail with a test.
-6. Wire Supabase Auth: email + Google, and settle identity-linking behaviour.
-7. Seed the instrument catalogue.
-8. Deploy to Vercel and confirm the pooled connection works in a serverless runtime.
+1. ~~Create the Supabase project; capture credentials.~~ **Done.**
+2. ~~Install and configure Prisma; confirm the connection.~~ **Done.**
+3. **Author the schema** from [PLAN.md §4](PLAN.md). `Decimal` on every money and price field. Show
+   it for review before running any migration.
+4. Add the `prisma-client` generator with an explicit output path, gitignore the generated client,
+   and add a `postinstall` generate step for Vercel builds.
+5. Wire the runtime `PrismaClient` with a driver adapter (`@prisma/adapter-pg`) against the pooled
+   `DATABASE_URL`.
+6. Write RLS policies as raw SQL in the initial migration.
+7. Build the `prismaForUser` client extension and prove the tenancy guardrail with a test.
+8. Wire Supabase Auth: email + Google, and settle identity-linking behaviour.
+9. Seed the instrument catalogue.
+10. Deploy to Vercel and confirm the pooled connection works in a serverless runtime.
 
 Nothing user-facing beyond login ships in this phase.
 

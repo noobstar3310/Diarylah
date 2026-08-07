@@ -1,0 +1,9 @@
+// Diarylah — database schema
+// See docs/PLAN.md §4 for the data model and §5 for the P/L and FX engine.
+//
+// Prisma 7 note: connection URLs live in prisma.config.ts, not here. The
+// runtime client gets its connection through a driver adapter.
+
+datasource db {
+  provider = "postgresql"
+}
