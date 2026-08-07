@@ -282,6 +282,26 @@ list of the only four permitted uses. CLAUDE.md §5.1 updated to match.
 
 *Append-only, newest first.*
 
+### 2026-08-07 — Fixed CI: typecheck needs `next typegen` first
+
+CI had been red since it was added, on `main` and on PR #1. The failing step was **Typecheck**, which
+passed locally and failed on the runner.
+
+Cause: Next 16 generates global route types — including `LayoutProps`, used by
+[app/layout.tsx](../app/layout.tsx) — into `.next/types/`, and generates `next-env.d.ts`. Both are
+gitignored, and both are listed in [tsconfig.json](../tsconfig.json)'s `include`. A developer's
+machine has them because `next dev`/`next build` has run; a clean CI checkout does not. So `tsc` ran
+before the types existed and failed with `TS2304: Cannot find name 'LayoutProps'`.
+
+Reproduced locally by moving `next-env.d.ts` and `.next/` aside, which produced the identical error.
+
+Fix: `typecheck` is now `next typegen && tsc --noEmit`. Next 16 ships `next typegen` for exactly this
+— it generates route types without a full build. Putting it in the npm script rather than only in the
+workflow means a fresh clone typechecks correctly for a human too.
+
+**Lesson worth keeping:** any CI failure that cannot be reproduced locally usually comes from a
+gitignored artefact the local machine has and a clean checkout does not.
+
 ### 2026-08-07 — First migration applied; tenancy guardrail built
 
 Installed `@prisma/adapter-pg` (bundles `pg`, no separate install needed). Prisma 7's `PrismaClient`
