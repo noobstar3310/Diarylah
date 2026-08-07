@@ -46,6 +46,9 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      - name: Test
+        run: npm test
+
       - name: Validate Prisma schema
         run: npx prisma validate
 

@@ -276,11 +276,56 @@ all legitimately need unscoped access. Rather than quietly violating the rule, i
 export with a name that makes misuse visible in review and greppable in a diff, plus an enumerated
 list of the only four permitted uses. CLAUDE.md §5.1 updated to match.
 
+**2026-08-07 — Tenancy rules live in a pure module, separate from the Prisma wiring.**
+[lib/tenancy.ts](../lib/tenancy.ts) holds `scopeQuery()` — no imports, no side effects, takes an
+operation and returns rewritten args or throws. [lib/db.ts](../lib/db.ts) is now only the client
+wiring and a one-line extension that delegates to it.
+
+This is not tidiness for its own sake. The control keeping one trader's book out of another's needs
+to be exhaustively testable without a database, a session, or a running app — and extracting it is
+what surfaced the ownership-reassignment hole below. Keep new tenancy rules in the pure module.
+
+**2026-08-07 — Fixed: a scoped client could give a row away.**
+The first implementation scoped `where` and stamped `create`, but nothing stopped
+`update({ where: { id }, data: { userId: someoneElse } })`. That passes the tenant filter — the caller
+genuinely owns the row at that moment — and then transfers it to another user. Reads and creates were
+guarded; the *transition* was not.
+
+`scopeQuery` now throws on any attempt to set the owner column in `update`, `updateMany`, or the
+`update` branch of `upsert`. Reassigning ownership is never legitimate through a user-scoped client.
+
+Worth remembering as a pattern: guarding "who can read this" and "who can create this" is not the
+same as guarding "who can this become".
+
 ---
 
 ## Session log
 
 *Append-only, newest first.*
+
+### 2026-08-07 — Tenancy guardrail proven by tests
+
+Added **Vitest** and [lib/tenancy.test.ts](../lib/tenancy.test.ts) — **36 tests**, all passing. The
+guardrail is now demonstrated rather than asserted, closing the gap flagged in the previous session.
+
+Coverage: every filterable operation is constrained; a caller-supplied `userId` in `where` is
+AND-wrapped so it matches nothing rather than someone else's rows; forged owner ids in `create` and
+`createMany` payloads are overwritten; parent-owned models filter through the relation and refuse
+direct creates; shared reference data is readable but not writable; `User` scopes on `id` rather than
+`userId`; and an unclassified model throws instead of leaking.
+
+**Found and fixed a genuine vulnerability while writing these** — see the decision above on ownership
+reassignment. It existed in the code merged in PR #1.
+
+Refactored the rules into [lib/tenancy.ts](../lib/tenancy.ts) as pure functions. `scopeQuery` is
+generic over the args type so Prisma's per-operation types flow through the extension; one documented
+cast at the return covers the shape Prisma's types cannot express.
+
+`vitest.config.mts` uses the `.mts` extension deliberately — as `.ts` it loads as CommonJS and Vite
+warns about ESM syntax.
+
+CI now runs `npm test` between typecheck and Prisma validation. Full local sequence verified green:
+lint, typecheck, test, validate, build.
 
 ### 2026-08-07 — Fixed CI: typecheck needs `next typegen` first
 
@@ -451,9 +496,10 @@ architecture, and the PWA push constraints. Settled the decisions recorded above
 5. ~~Wire the runtime client with `@prisma/adapter-pg`.~~ **Done.**
 6. ~~Run the first migration.~~ **Done** — `20260807075919_init`, 13 tables, RLS on, no policies
    needed (see the decision above).
-7. ~~Build the `prismaForUser` extension.~~ **Built** — but **not yet proven by a test.** Add Vitest
-   and write the test that a second user cannot read the first user's rows through the scoped client.
-   Until that exists, the guardrail is asserted rather than demonstrated.
+7. ~~Build the `prismaForUser` extension and prove it.~~ **Done** — 36 passing tests in
+   [lib/tenancy.test.ts](../lib/tenancy.test.ts). One remaining gap: these prove the *rewriting* is
+   correct, not that Postgres then behaves as expected. An integration test against a real database
+   is worth adding once a separate dev Supabase project exists.
 8. Seed the instrument catalogue (FX majors, metals, indices, crypto) via `prismaSystem`.
 9. Wire Supabase Auth: email + Google, and settle identity-linking behaviour. Create the `User` row
    on first sign-in.
