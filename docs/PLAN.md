@@ -65,9 +65,20 @@ a critical mistake:
 > Supabase exposes a public PostgREST API over every table, reachable with the `anon` key — and the
 > `anon` key ships to the browser. With RLS off, any visitor can read every user's trades.
 
-So: RLS enabled on every user-scoped table, with `auth.uid()`-based policies. Prisma Migrate will
-not author policies, so they are written as raw SQL inside migration files and version-controlled
-alongside the schema.
+So: RLS enabled on every user-scoped table — and verified after the first migration, not assumed.
+
+**Refinement made during Phase 0.** Supabase's automatic-RLS event trigger enables RLS on every table
+Prisma creates, and we deliberately hold **zero policies**. In Postgres, RLS enabled with no policies
+denies all access to any role that does not bypass it. That is the strictest possible posture, and it
+is what we want: the Data API is disabled, so no legitimate caller reaches these tables through
+PostgREST. Writing permissive `auth.uid()` policies would only widen access.
+
+Policies become necessary if — and only if — the Data API is ever re-enabled, or Realtime is adopted.
+At that point they are written as raw SQL inside migration files. Until then, adding them would be
+loosening a working lock.
+
+Prisma is unaffected either way: it connects as `postgres`, which carries `BYPASSRLS`. That is
+precisely why §3.2 exists.
 
 ### 3.2 Prisma Client Extension as the tenancy guardrail
 

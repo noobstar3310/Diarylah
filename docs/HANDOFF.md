@@ -227,11 +227,87 @@ led to disconnecting Supabase's GitHub integration: schema changes against real 
 A second Supabase project for dev/previews is not needed yet — Phase 0 CI is lint, typecheck, and
 pure unit tests. Add it before Phase 1 ends, while there is still no real data to protect.
 
+**2026-08-07 — `main` is protected by a GitHub ruleset named `protect-default-branch`.**
+Active, targeting the default branch. Requires a pull request (0 approvals — GitHub will not let a
+solo developer approve their own PR, and requiring 1 would lock the repository), requires the
+**`verify`** status check from [ci.yml](../.github/workflows/ci.yml), restricts deletions, blocks
+force pushes, and requires linear history with **squash-only** merges so each PR lands as exactly one
+Conventional Commit.
+
+Repository admin is on the bypass list to avoid lockout during a hotfix. Note this means direct
+pushes to `main` still succeed for the owner — the ruleset is a prompt rather than a wall. Tightening
+the bypass to "pull requests only" would make it binding.
+
+Working loop from here: branch → commit → push → PR → CI and Vercel preview → squash-merge.
+
+**2026-08-07 — GitHub Advanced Security enabled.** The repository is **public**, which is why secret
+scanning is available at no cost. Enabled: private vulnerability reporting, dependency graph,
+Dependabot alerts, Dependabot security updates (grouped), Dependabot malware alerts, CodeQL default
+setup, Secret Protection, and **push protection** — which blocks any push containing a recognised
+credential. That last one is the platform-level backstop for the `git add .` workflow, sitting behind
+`.gitignore` and the mandatory `git status` check.
+
+Deliberately **off**: Dependabot *version* updates (security updates already cover what matters;
+version updates would flood the repo with PRs for Next, React, Prisma and Tailwind bumps), and
+automatic dependency submission (npm's lockfile already gives GitHub the full tree).
+
+`protect-default-branch` additionally requires **CodeQL** code-scanning results at High-or-higher
+severity. If a PR ever stalls waiting on CodeQL — it can happen on docs-only changes — use the admin
+bypass rather than removing the rule.
+
+**2026-08-07 — RLS: enabled everywhere, zero policies, and that is the finished state.**
+Verified after the first migration rather than assumed. Supabase's automatic-RLS event trigger fires
+on Prisma-created tables, so all 13 tables in `public` came out with `relrowsecurity = true` and no
+policies. In Postgres that combination **denies all access** to any role lacking `BYPASSRLS`.
+
+This supersedes the original plan to write `auth.uid()` policies into the initial migration. Adding
+permissive policies now would *widen* access from "nothing" to "something", which is the wrong
+direction while the Data API is off. Policies become necessary only if the Data API or Realtime is
+later enabled.
+
+Confirmed by direct query: Prisma connects as **`postgres`**, which has `rolbypassrls = true`. RLS
+therefore does nothing to constrain Prisma — exactly as PLAN.md §3.1 predicted, and exactly why the
+`prismaForUser` guardrail is the actual tenancy control rather than a belt-and-braces extra.
+
+**2026-08-07 — `prismaSystem` exists as a documented exception to the module-private rule.**
+CLAUDE.md originally said the unscoped client is never exported. That was unworkable: seeding the
+instrument catalogue, writing the FX cache, creating the `User` row at signup, and the reminder cron
+all legitimately need unscoped access. Rather than quietly violating the rule, it is now an explicit
+export with a name that makes misuse visible in review and greppable in a diff, plus an enumerated
+list of the only four permitted uses. CLAUDE.md §5.1 updated to match.
+
 ---
 
 ## Session log
 
 *Append-only, newest first.*
+
+### 2026-08-07 — First migration applied; tenancy guardrail built
+
+Installed `@prisma/adapter-pg` (bundles `pg`, no separate install needed). Prisma 7's `PrismaClient`
+takes `{ adapter }` rather than a connection URL.
+
+Wrote [lib/db.ts](../lib/db.ts): the pooled client behind a hot-reload-safe singleton, plus
+`prismaForUser(userId)` built on a Prisma client extension. It classifies every model as directly
+owned (`userId`/`id` column), owned via a parent relation, or shared reference data, and:
+
+- injects the owner predicate into `where` for all filterable operations
+- stamps the owner column onto `create` / `createMany` / `upsert` payloads, so a caller cannot forge
+  someone else's id — the injected value wins
+- refuses direct creates of parent-owned models (`TradeImage`, `TradeRuleCheck`,
+  `InstrumentOverride`), forcing them through a nested write on an already-scoped parent where
+  ownership is provable
+- refuses writes to shared reference data
+- **throws for any model missing a tenancy rule**, so a future schema addition fails loudly rather
+  than silently becoming world-readable
+
+Key enabler, verified against the generated types: Prisma's extended where-unique means
+`TradeWhereUniqueInput` accepts `userId` as a filter. That allows `findUnique`, `update` and `delete`
+to be scoped uniformly alongside `findMany` — no operation is left unguarded.
+
+Ran `prisma migrate dev --name init`. Migration `20260807075919_init` created and applied; Supabase's
+session pooler permitted shadow-database creation, so `migrate dev` works normally. **13 tables now
+exist.** Typecheck clean.
 
 ### 2026-08-07 — CI workflow and Vercel region
 
@@ -352,12 +428,15 @@ architecture, and the PWA push constraints. Settled the decisions recorded above
 2. ~~Install and configure Prisma; confirm the connection.~~ **Done.**
 3. ~~Author the schema from [PLAN.md §4](PLAN.md).~~ **Done, awaiting review before migrating.**
 4. ~~Generator, gitignore, `postinstall`.~~ **Done.**
-5. Wire the runtime `PrismaClient` with a driver adapter (`@prisma/adapter-pg`) against the pooled
-   `DATABASE_URL`. Prisma 7 no longer accepts a connection URL on the constructor.
-6. Run the first migration, and write RLS policies as raw SQL inside it.
-7. Build the `prismaForUser` client extension and prove the tenancy guardrail with a test.
-8. Wire Supabase Auth: email + Google, and settle identity-linking behaviour.
-9. Seed the instrument catalogue.
+5. ~~Wire the runtime client with `@prisma/adapter-pg`.~~ **Done.**
+6. ~~Run the first migration.~~ **Done** — `20260807075919_init`, 13 tables, RLS on, no policies
+   needed (see the decision above).
+7. ~~Build the `prismaForUser` extension.~~ **Built** — but **not yet proven by a test.** Add Vitest
+   and write the test that a second user cannot read the first user's rows through the scoped client.
+   Until that exists, the guardrail is asserted rather than demonstrated.
+8. Seed the instrument catalogue (FX majors, metals, indices, crypto) via `prismaSystem`.
+9. Wire Supabase Auth: email + Google, and settle identity-linking behaviour. Create the `User` row
+   on first sign-in.
 10. Deploy to Vercel and confirm the pooled connection works in a serverless runtime.
 
 Nothing user-facing beyond login ships in this phase.
