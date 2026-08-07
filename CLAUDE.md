@@ -110,12 +110,20 @@ pass.**
 - Any client-supplied id (`journalId`, `tradeId`, `ruleId`, …) is untrusted. **Verify ownership**
   against the session user before reading or writing through it. An IDOR here exposes another
   trader's entire book.
-- All database access goes through `prismaForUser(userId)`. The unscoped Prisma client stays
-  module-private and is never exported.
-- **Row Level Security stays enabled on every user-scoped table.** Prisma bypasses RLS, but Supabase
-  publishes a PostgREST API over every table reachable with the browser-visible `anon` key. Disabling
-  RLS would expose the entire database to the public internet. This is never an acceptable
-  simplification, not even temporarily in development.
+- All database access goes through `prismaForUser(userId)` in [lib/db.ts](lib/db.ts). It rewrites
+  every query to filter on the owner, stamps the owner column on creates, and throws for any model
+  that has no declared tenancy rule — so adding a model without deciding how it is owned fails loudly
+  instead of exposing it.
+- `prismaSystem` is the **only** exported unscoped client and the one deliberate exception. It is
+  legitimate for exactly four things: seeding the shared `Instrument` catalogue, writing the `FxRate`
+  cache, creating the `User` row at signup before a scoped client can exist, and the cron job that
+  fans out reminders. **Never import it into a Server Action that handles user input.** If you are
+  reaching for it to serve a signed-in user's request, you want `prismaForUser`.
+- **Row Level Security stays enabled on every table, with zero policies.** RLS with no policies denies
+  all access to roles that do not bypass it — the strictest posture available, and correct while the
+  Data API is disabled. Do not add permissive `auth.uid()` policies "for completeness"; that widens
+  access. Policies become necessary only if the Data API or Realtime is ever enabled. Never disable
+  RLS itself, in any environment.
 
 ### 5.2 Input handling
 
