@@ -297,11 +297,64 @@ guarded; the *transition* was not.
 Worth remembering as a pattern: guarding "who can read this" and "who can create this" is not the
 same as guarding "who can this become".
 
+**2026-08-07 — Next 16 renamed Middleware to Proxy.** The file is `proxy.ts` at the project root and
+exports `proxy`, not `middleware.ts` exporting `middleware`. **Supabase's own auth documentation says
+middleware** — it is describing an older Next and will mislead anyone following it verbatim. Verified
+in `node_modules/next/dist/docs/01-app/01-getting-started/16-proxy.md`; `next build` confirms it with
+a `ƒ Proxy (Middleware)` line.
+
+**2026-08-07 — Always `getUser()`, never `getSession()`, on the server.**
+`getSession()` reads the auth cookie and trusts it. `getUser()` revalidates the JWT with Supabase's
+auth server. On the server the cookie is attacker-controllable input, so only `getUser()` constitutes
+verification. Both [lib/auth.ts](../lib/auth.ts) and [proxy.ts](../proxy.ts) use `getUser()`.
+
+**2026-08-07 — Proxy is not the authorization boundary.**
+Per Next's own guidance, Proxy is for optimistic checks and session refresh only. The real check is
+`requireUser()` in the Server Component or Server Action that actually reads data. Never rely on a
+route being "behind" the proxy as a substitute for `requireUser()` / `getDb()`.
+
 ---
 
 ## Session log
 
 *Append-only, newest first.*
+
+### 2026-08-07 — Supabase Auth wired end to end
+
+Installed `@supabase/ssr`, `@supabase/supabase-js`, `server-only`, and `zod`.
+
+- [lib/env.ts](../lib/env.ts) — validated env accessors. Lazy rather than module constants, because
+  `next build` evaluates modules while prerendering and CI has no real credentials. The
+  `process.env.NEXT_PUBLIC_*` references must stay literal; Next inlines them by textual substitution.
+- [lib/supabase/server.ts](../lib/supabase/server.ts) — `server-only` client using Next 16's async
+  `cookies()`. Its `setAll` swallows the write error thrown in Server Components, which is expected:
+  Proxy has already persisted the refresh.
+- [lib/auth.ts](../lib/auth.ts) — the Data Access Layer. `getAuthUser()` (nullable), `requireUser()`
+  (redirects), `getDb()` (returns a `prismaForUser` client), all memoised with React `cache()` so one
+  render pass shares a single verification. `ensureUserProfile()` creates the profile row via
+  `prismaSystem` on first sign-in — a scoped client cannot, since the row it would scope to does not
+  exist yet.
+- [proxy.ts](../proxy.ts) — session refresh on every non-asset request.
+- [app/auth/callback/route.ts](../app/auth/callback/route.ts) — code exchange, profile bootstrap,
+  redirect. Honours `x-forwarded-host` so it works behind Vercel's proxy.
+- [app/login/page.tsx](../app/login/page.tsx) + `actions.ts` — magic link and Google, both as Server
+  Actions, so the page ships no client JavaScript.
+- [app/page.tsx](../app/page.tsx) — replaced the scaffold page with a minimal authenticated one that
+  proves the chain: session → profile → scoped Prisma → real query.
+
+Two deliberate security choices in the sign-in flow:
+
+- **Open-redirect guard** on the callback's `next` parameter — only same-site relative paths are
+  honoured, and `//evil.example` is rejected as a protocol-relative absolute URL.
+- **No email enumeration** — the magic-link action returns the identical response whether or not the
+  address has an account. Saying "no such user" would leak the user list.
+
+CI gained placeholder `NEXT_PUBLIC_SUPABASE_*` values for the same reason it has placeholder database
+URLs: the build evaluates modules that validate them. They reach no Supabase project.
+
+Verified: lint, typecheck, 36 tests, build. Build output shows `ƒ Proxy (Middleware)` and the three
+routes. **The flow has not yet been exercised against a real browser session** — that needs the
+Supabase dashboard configuration below.
 
 ### 2026-08-07 — Instrument catalogue seeded
 
@@ -534,9 +587,16 @@ architecture, and the PWA push constraints. Settled the decisions recorded above
    correct, not that Postgres then behaves as expected. An integration test against a real database
    is worth adding once a separate dev Supabase project exists.
 8. ~~Seed the instrument catalogue.~~ **Done** — 55 instruments live, `npm run db:seed`, idempotent.
-9. Wire Supabase Auth: email + Google, and settle identity-linking behaviour. Create the `User` row
-   on first sign-in.
-10. Deploy to Vercel and confirm the pooled connection works in a serverless runtime.
+9. ~~Wire Supabase Auth.~~ **Code done, not yet exercised.** Blocked on dashboard configuration:
+   - **Authentication → URL Configuration:** set Site URL, and add `http://localhost:3000/auth/callback`
+     plus the Vercel URL's callback to the redirect allow-list. Magic links and OAuth both fail
+     silently without this.
+   - **Authentication → Providers → Google:** enable, paste the client ID and secret, and set the
+     Google console's authorized redirect URI to `https://<ref>.supabase.co/auth/v1/callback`.
+   - **Settle identity linking** — the long-standing open question. Sign up with Google, then request
+     a magic link for the same address, and confirm you land in the *same* account.
+10. Deploy to Vercel and confirm the pooled connection works in a serverless runtime. Set the same
+    env vars there, with real values.
 
 Nothing user-facing beyond login ships in this phase.
 
@@ -547,6 +607,13 @@ Nothing user-facing beyond login ships in this phase.
 - **Identity linking is unresolved.** If a user signs up with Google then signs in with X on the same
   email, Supabase may create a second account and they will find an empty journal. Must be configured
   and tested before launch.
+- **`User.timezone` defaults to `UTC` at signup.** `ensureUserProfile()` has no way to know the
+  browser's zone. Every notion of "day" — streaks, daily P&L, today's checklist — derives from this
+  field, so leaving it wrong quietly breaks the habit loop that is the point of the app. Needs an
+  onboarding step that captures `Intl.DateTimeFormat().resolvedOptions().timeZone` and saves it.
+  See PLAN.md §6.
+- **Sign-in uses a magic link rather than a password.** Fewer failure modes: no password storage, no
+  reset flow, no credential stuffing. If a password option is wanted later it is a small addition.
 - **X/Twitter OAuth unconfirmed.** Verify the developer portal still permits login at the intended
   tier before promising it in the UI.
 - **Partial closes and scaling out are not modelled.** One entry, one exit per trade. Supporting
