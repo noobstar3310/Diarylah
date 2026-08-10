@@ -27,6 +27,11 @@ jobs:
       # valid placeholders, not credentials — CI has no database access.
       DATABASE_URL: postgresql://ci:ci@localhost:5432/postgres
       DIRECT_URL: postgresql://ci:ci@localhost:5432/postgres
+      # Likewise placeholders. `next build` evaluates modules during
+      # prerendering, and lib/env.ts throws on a missing variable by design.
+      # Not credentials — CI reaches no Supabase project.
+      NEXT_PUBLIC_SUPABASE_URL: https://ci-placeholder.supabase.co
+      NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: sb_publishable_ci_placeholder
 
     steps:
       - uses: actions/checkout@v4
@@ -45,6 +50,9 @@ jobs:
 
       - name: Typecheck
         run: npm run typecheck
+
+      - name: Test
+        run: npm test
 
       - name: Validate Prisma schema
         run: npx prisma validate
