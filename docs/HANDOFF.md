@@ -27,7 +27,12 @@ what worked.
 
 ## Current state
 
-**Phase:** Phase 0 — Foundation, in progress. Database connection proven; no models yet.
+**Phase:** **Phase 0 complete and verified end to end.** Ready to start Phase 1 — the journal.
+
+Sign-in works against the live project. Verified in the database rather than assumed: one row in
+`public.users`, one in `auth.users`, ids matching, one linked identity. The home page renders
+`journals = 0` and `instruments = 55` — which is the tenancy guardrail demonstrating itself in
+production, not just in unit tests.
 
 **What exists:**
 
@@ -319,6 +324,31 @@ route being "behind" the proxy as a substitute for `requireUser()` / `getDb()`.
 
 *Append-only, newest first.*
 
+### 2026-08-07 — Phase 0 closed: sign-in works against the live project
+
+Magic-link sign-in verified end to end. Confirmed by querying the database directly rather than
+trusting the UI: `public.users` and `auth.users` each hold exactly one row with matching ids, and one
+linked identity. The home page shows `journals = 0`, `instruments = 55`.
+
+Dashboard configuration completed by the user: Supabase Site URL and the
+`http://localhost:3000/auth/callback` redirect allow-list entry, plus a Google Cloud project
+(`diarylah`) with an OAuth consent screen, a test user, and a Web application client whose authorized
+redirect URI points at `https://<ref>.supabase.co/auth/v1/callback`.
+
+Notes for whoever configures a new environment:
+
+- The Supabase **redirect allow-list is the thing that silently breaks sign-in** when missing. Both
+  magic link and OAuth fail with no useful client-side error.
+- Google's authorized redirect URI is the **Supabase** callback, never the app's. Google hands the
+  user to Supabase; Supabase hands them to us. This is the most common mistake.
+- Google's consent screen stays on **Testing** while only the owner signs in — test users must be
+  added individually. Publishing to production will be needed before public signup, but the basic
+  `email`/`profile` scopes do **not** require Google's verification review, so it is a one-click
+  change rather than a multi-week process.
+
+**`User.timezone` came out as `UTC`, as expected** — see known issues. This is now the highest-value
+small fix, because every "day" boundary in Phase 2 and 3 depends on it.
+
 ### 2026-08-07 — Supabase Auth wired end to end
 
 Installed `@supabase/ssr`, `@supabase/supabase-js`, `server-only`, and `zod`.
@@ -573,7 +603,28 @@ architecture, and the PWA push constraints. Settled the decisions recorded above
 
 ## Next up
 
-**Phase 0 — Foundation.** Remaining, in order:
+**Phase 1 — The journal.** Start with the P/L engine: it is pure, framework-free, and everything
+downstream depends on its numbers being right, so it carries the highest-value tests in the codebase.
+
+1. **P/L, FX and R-multiple engine** in a plain module with no React or Next imports, unit-tested
+   against known figures per asset class — EURUSD, USDJPY (quote-currency conversion), XAUUSD
+   (100 oz/lot), NAS100, BTCUSD.
+2. **FX rate fetching and caching** from Frankfurter, with the snapshot-at-write-time rule.
+3. **Journal CRUD** — create, rename, archive; base currency and starting balance.
+4. **Trade entry form** — clipboard paste, drag-drop and file upload to private storage; live P/L
+   preview; the manual override escape hatch.
+5. **Trade list and detail views.**
+
+Two small things worth doing early, both cheap and both blocking later work:
+
+- **Capture the user's timezone at onboarding.** Streaks and daily P&L in Phases 2–3 are wrong
+  without it, and retrofitting after real trades exist means recomputing day boundaries.
+- **A second Supabase project for dev/preview**, so integration tests and preview deploys stop
+  pointing at the same database as production.
+
+---
+
+## Completed: Phase 0 — Foundation
 
 1. ~~Create the Supabase project; capture credentials.~~ **Done.**
 2. ~~Install and configure Prisma; confirm the connection.~~ **Done.**
