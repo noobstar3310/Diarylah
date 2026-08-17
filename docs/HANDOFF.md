@@ -318,11 +318,65 @@ Per Next's own guidance, Proxy is for optimistic checks and session refresh only
 `requireUser()` in the Server Component or Server Action that actually reads data. Never rely on a
 route being "behind" the proxy as a substitute for `requireUser()` / `getDb()`.
 
+**2026-08-11 — Email links use `verifyOtp` with a token hash; OAuth keeps the PKCE code flow.**
+Magic links initially reused `/auth/callback` and the PKCE code exchange. That failed with
+`pkce_code_verifier_not_found`, and the failure is inherent rather than a misconfiguration: PKCE
+stores a verifier in the browser that *began* the flow, so any link opened elsewhere cannot complete.
+Requesting a link on a laptop and opening it on a phone — or simply having Gmail open in a different
+browser — is ordinary behaviour that would fail every single time.
+
+The two flows now differ because their trust models differ:
+
+| Route | Flow | Why |
+|---|---|---|
+| `/auth/callback` | PKCE code exchange | OAuth starts and finishes in one browser, so the verifier is present |
+| `/auth/confirm` | `verifyOtp` + token hash | The token carries its own proof, so the link works from any device |
+
+**This requires a dashboard change** that is easy to miss when setting up a new environment: the
+Supabase magic-link email template must point at
+`{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=email` rather than the default
+`{{ .ConfirmationURL }}`.
+
 ---
 
 ## Session log
 
 *Append-only, newest first.*
+
+### 2026-08-11 — Fixed magic-link sign-in; extracted and tested the redirect guards
+
+The generic "something went wrong" message was hiding the cause, because the sign-in actions returned
+a vague error without logging the detail — only half of CLAUDE.md §5.3. Added server-side logging of
+status, code and message (never the email address, which is identity rather than a debug value). That
+immediately produced `pkce_code_verifier_not_found` and the diagnosis above.
+
+Added [app/auth/confirm/route.ts](../app/auth/confirm/route.ts) for email links, and extracted the
+URL guards both auth routes had been duplicating into [lib/http.ts](../lib/http.ts):
+
+- `safeNextPath()` — the open-redirect guard. Now covered by 16 tests in
+  [lib/http.test.ts](../lib/http.test.ts) including protocol-relative URLs (`//evil.example`), the
+  backslash variant several browsers normalise (`/\evil.example`), `javascript:` and `data:` schemes,
+  and CR/LF injection for header smuggling. It was security logic buried in a route handler; it is
+  now a tested pure function.
+- `resolveBaseUrl()` — forwarded-header handling for Vercel's proxy.
+
+Suite is now **52 tests**. Lint, typecheck and build all clean; build registers `/auth/confirm`.
+
+### 2026-08-11 — Correction: the sign-in verified below was Google, not magic link
+
+The entry dated 2026-08-07 states magic-link sign-in was verified end to end. That claim is
+**unsafe**. Querying `auth.identities` afterwards found a single `google` identity, no `email`
+identity, and a populated `displayName` — which `ensureUserProfile` only writes on *create*, and only
+from Google metadata. The profile row was therefore created by a Google sign-in.
+
+What *is* verified: sign-in works, the profile row is created correctly, session verification works,
+and the scoped client returns `journals = 0` against `instruments = 55`. Phase 0 stands. What is not
+verified is the magic-link path, and by extension identity linking. See Known issues.
+
+Also fixed here: `ensureUserProfile` claimed in a comment to backfill a missing display name but its
+`update` branch only touched `email`. A magic-link-first user would have stayed nameless forever.
+Now a separate `updateMany` guarded on `displayName: null` fills it without overwriting a name the
+user has chosen.
 
 ### 2026-08-07 — Phase 0 closed: sign-in works against the live project
 
@@ -655,9 +709,19 @@ Nothing user-facing beyond login ships in this phase.
 
 ## Known issues & deferred
 
-- **Identity linking is unresolved.** If a user signs up with Google then signs in with X on the same
-  email, Supabase may create a second account and they will find an empty journal. Must be configured
-  and tested before launch.
+- **Identity linking is still unresolved, and an earlier check was misread.** Signing in with Google
+  after an apparent magic-link sign-in produced one `auth.users` row — which looked like proof of
+  linking, but was not. Querying `auth.identities` showed a **single `google` identity and no `email`
+  identity**, and `public.users.displayName` was populated, which only happens on *create* and only
+  from Google metadata. So the profile row was created by a Google sign-in and the two methods have
+  never actually been exercised against one account.
+
+  **The conclusive test:** sign out, sign in via magic link with the same address, then count rows in
+  `auth.identities`. Two identities on one user means linking works; two users means a real user
+  switching methods would find an empty journal.
+
+  Lesson for the next agent: the Users list in the Supabase dashboard shows one provider per row and
+  will not answer this. Query `auth.identities` directly.
 - **`User.timezone` defaults to `UTC` at signup.** `ensureUserProfile()` has no way to know the
   browser's zone. Every notion of "day" — streaks, daily P&L, today's checklist — derives from this
   field, so leaving it wrong quietly breaks the habit loop that is the point of the app. Needs an

@@ -28,10 +28,19 @@ export async function signInWithEmail(formData: FormData) {
   const supabase = await createSupabaseServerClient()
   const { error } = await supabase.auth.signInWithOtp({
     email: parsed.data,
-    options: { emailRedirectTo: `${await siteOrigin()}/auth/callback` },
+    // /auth/confirm, not /auth/callback: email links use verifyOtp with a token
+    // hash so they survive being opened on a different device. See that route.
+    options: { emailRedirectTo: `${await siteOrigin()}/auth/confirm` },
   })
 
   if (error) {
+    // Detail server-side, generic message to the caller — CLAUDE.md §5.3.
+    // Never log the address itself; it is the user's identity, not a debug value.
+    console.error('[auth] signInWithOtp failed', {
+      status: error.status,
+      code: error.code,
+      message: error.message,
+    })
     redirect('/login?error=sign_in_failed')
   }
 
@@ -49,6 +58,11 @@ export async function signInWithGoogle() {
   })
 
   if (error || !data.url) {
+    console.error('[auth] signInWithOAuth failed', {
+      status: error?.status,
+      code: error?.code,
+      message: error?.message ?? 'no redirect url returned',
+    })
     redirect('/login?error=sign_in_failed')
   }
 

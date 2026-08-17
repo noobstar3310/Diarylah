@@ -76,8 +76,18 @@ export async function ensureUserProfile(user: {
   await prismaSystem.user.upsert({
     where: { id: user.id },
     create: { id: user.id, email, displayName },
-    // Only backfill a display name we do not already have — never overwrite one
-    // the user has since chosen for themselves.
     update: { email },
   })
+
+  // Backfill a display name only when we do not already have one. A magic-link
+  // sign-in carries no name, so a user who started that way would otherwise stay
+  // nameless forever even after connecting Google. The `displayName: null`
+  // predicate is what stops this overwriting a name the user has since chosen —
+  // which is why it is a separate guarded write rather than part of the upsert.
+  if (displayName) {
+    await prismaSystem.user.updateMany({
+      where: { id: user.id, displayName: null },
+      data: { displayName },
+    })
+  }
 }
