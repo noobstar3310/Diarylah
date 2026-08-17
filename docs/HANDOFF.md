@@ -27,7 +27,12 @@ what worked.
 
 ## Current state
 
-**Phase:** Phase 0 — Foundation, in progress. Database connection proven; no models yet.
+**Phase:** **Phase 0 complete and verified end to end.** Ready to start Phase 1 — the journal.
+
+Sign-in works against the live project. Verified in the database rather than assumed: one row in
+`public.users`, one in `auth.users`, ids matching, one linked identity. The home page renders
+`journals = 0` and `instruments = 55` — which is the tenancy guardrail demonstrating itself in
+production, not just in unit tests.
 
 **What exists:**
 
@@ -313,11 +318,90 @@ Per Next's own guidance, Proxy is for optimistic checks and session refresh only
 `requireUser()` in the Server Component or Server Action that actually reads data. Never rely on a
 route being "behind" the proxy as a substitute for `requireUser()` / `getDb()`.
 
+**2026-08-11 — Email links use `verifyOtp` with a token hash; OAuth keeps the PKCE code flow.**
+Magic links initially reused `/auth/callback` and the PKCE code exchange. That failed with
+`pkce_code_verifier_not_found`, and the failure is inherent rather than a misconfiguration: PKCE
+stores a verifier in the browser that *began* the flow, so any link opened elsewhere cannot complete.
+Requesting a link on a laptop and opening it on a phone — or simply having Gmail open in a different
+browser — is ordinary behaviour that would fail every single time.
+
+The two flows now differ because their trust models differ:
+
+| Route | Flow | Why |
+|---|---|---|
+| `/auth/callback` | PKCE code exchange | OAuth starts and finishes in one browser, so the verifier is present |
+| `/auth/confirm` | `verifyOtp` + token hash | The token carries its own proof, so the link works from any device |
+
+**This requires a dashboard change** that is easy to miss when setting up a new environment: the
+Supabase magic-link email template must point at
+`{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=email` rather than the default
+`{{ .ConfirmationURL }}`.
+
 ---
 
 ## Session log
 
 *Append-only, newest first.*
+
+### 2026-08-11 — Fixed magic-link sign-in; extracted and tested the redirect guards
+
+The generic "something went wrong" message was hiding the cause, because the sign-in actions returned
+a vague error without logging the detail — only half of CLAUDE.md §5.3. Added server-side logging of
+status, code and message (never the email address, which is identity rather than a debug value). That
+immediately produced `pkce_code_verifier_not_found` and the diagnosis above.
+
+Added [app/auth/confirm/route.ts](../app/auth/confirm/route.ts) for email links, and extracted the
+URL guards both auth routes had been duplicating into [lib/http.ts](../lib/http.ts):
+
+- `safeNextPath()` — the open-redirect guard. Now covered by 16 tests in
+  [lib/http.test.ts](../lib/http.test.ts) including protocol-relative URLs (`//evil.example`), the
+  backslash variant several browsers normalise (`/\evil.example`), `javascript:` and `data:` schemes,
+  and CR/LF injection for header smuggling. It was security logic buried in a route handler; it is
+  now a tested pure function.
+- `resolveBaseUrl()` — forwarded-header handling for Vercel's proxy.
+
+Suite is now **52 tests**. Lint, typecheck and build all clean; build registers `/auth/confirm`.
+
+### 2026-08-11 — Correction: the sign-in verified below was Google, not magic link
+
+The entry dated 2026-08-07 states magic-link sign-in was verified end to end. That claim is
+**unsafe**. Querying `auth.identities` afterwards found a single `google` identity, no `email`
+identity, and a populated `displayName` — which `ensureUserProfile` only writes on *create*, and only
+from Google metadata. The profile row was therefore created by a Google sign-in.
+
+What *is* verified: sign-in works, the profile row is created correctly, session verification works,
+and the scoped client returns `journals = 0` against `instruments = 55`. Phase 0 stands. What is not
+verified is the magic-link path, and by extension identity linking. See Known issues.
+
+Also fixed here: `ensureUserProfile` claimed in a comment to backfill a missing display name but its
+`update` branch only touched `email`. A magic-link-first user would have stayed nameless forever.
+Now a separate `updateMany` guarded on `displayName: null` fills it without overwriting a name the
+user has chosen.
+
+### 2026-08-07 — Phase 0 closed: sign-in works against the live project
+
+Magic-link sign-in verified end to end. Confirmed by querying the database directly rather than
+trusting the UI: `public.users` and `auth.users` each hold exactly one row with matching ids, and one
+linked identity. The home page shows `journals = 0`, `instruments = 55`.
+
+Dashboard configuration completed by the user: Supabase Site URL and the
+`http://localhost:3000/auth/callback` redirect allow-list entry, plus a Google Cloud project
+(`diarylah`) with an OAuth consent screen, a test user, and a Web application client whose authorized
+redirect URI points at `https://<ref>.supabase.co/auth/v1/callback`.
+
+Notes for whoever configures a new environment:
+
+- The Supabase **redirect allow-list is the thing that silently breaks sign-in** when missing. Both
+  magic link and OAuth fail with no useful client-side error.
+- Google's authorized redirect URI is the **Supabase** callback, never the app's. Google hands the
+  user to Supabase; Supabase hands them to us. This is the most common mistake.
+- Google's consent screen stays on **Testing** while only the owner signs in — test users must be
+  added individually. Publishing to production will be needed before public signup, but the basic
+  `email`/`profile` scopes do **not** require Google's verification review, so it is a one-click
+  change rather than a multi-week process.
+
+**`User.timezone` came out as `UTC`, as expected** — see known issues. This is now the highest-value
+small fix, because every "day" boundary in Phase 2 and 3 depends on it.
 
 ### 2026-08-07 — Supabase Auth wired end to end
 
@@ -573,7 +657,28 @@ architecture, and the PWA push constraints. Settled the decisions recorded above
 
 ## Next up
 
-**Phase 0 — Foundation.** Remaining, in order:
+**Phase 1 — The journal.** Start with the P/L engine: it is pure, framework-free, and everything
+downstream depends on its numbers being right, so it carries the highest-value tests in the codebase.
+
+1. **P/L, FX and R-multiple engine** in a plain module with no React or Next imports, unit-tested
+   against known figures per asset class — EURUSD, USDJPY (quote-currency conversion), XAUUSD
+   (100 oz/lot), NAS100, BTCUSD.
+2. **FX rate fetching and caching** from Frankfurter, with the snapshot-at-write-time rule.
+3. **Journal CRUD** — create, rename, archive; base currency and starting balance.
+4. **Trade entry form** — clipboard paste, drag-drop and file upload to private storage; live P/L
+   preview; the manual override escape hatch.
+5. **Trade list and detail views.**
+
+Two small things worth doing early, both cheap and both blocking later work:
+
+- **Capture the user's timezone at onboarding.** Streaks and daily P&L in Phases 2–3 are wrong
+  without it, and retrofitting after real trades exist means recomputing day boundaries.
+- **A second Supabase project for dev/preview**, so integration tests and preview deploys stop
+  pointing at the same database as production.
+
+---
+
+## Completed: Phase 0 — Foundation
 
 1. ~~Create the Supabase project; capture credentials.~~ **Done.**
 2. ~~Install and configure Prisma; confirm the connection.~~ **Done.**
@@ -604,9 +709,19 @@ Nothing user-facing beyond login ships in this phase.
 
 ## Known issues & deferred
 
-- **Identity linking is unresolved.** If a user signs up with Google then signs in with X on the same
-  email, Supabase may create a second account and they will find an empty journal. Must be configured
-  and tested before launch.
+- **Identity linking is still unresolved, and an earlier check was misread.** Signing in with Google
+  after an apparent magic-link sign-in produced one `auth.users` row — which looked like proof of
+  linking, but was not. Querying `auth.identities` showed a **single `google` identity and no `email`
+  identity**, and `public.users.displayName` was populated, which only happens on *create* and only
+  from Google metadata. So the profile row was created by a Google sign-in and the two methods have
+  never actually been exercised against one account.
+
+  **The conclusive test:** sign out, sign in via magic link with the same address, then count rows in
+  `auth.identities`. Two identities on one user means linking works; two users means a real user
+  switching methods would find an empty journal.
+
+  Lesson for the next agent: the Users list in the Supabase dashboard shows one provider per row and
+  will not answer this. Query `auth.identities` directly.
 - **`User.timezone` defaults to `UTC` at signup.** `ensureUserProfile()` has no way to know the
   browser's zone. Every notion of "day" — streaks, daily P&L, today's checklist — derives from this
   field, so leaving it wrong quietly breaks the habit loop that is the point of the app. Needs an
